@@ -1,0 +1,1 @@
+kaggle datasets download -d lunarwhite/anime-face-dataset-ntumlds -p ../anime --unzip
