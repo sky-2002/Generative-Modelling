@@ -99,6 +99,64 @@ class Discriminator(nn.Module):
             nn.Sigmoid(),
         )
 
+    def make_spectral(self):
+        self.conv_block1 = nn.Sequential(
+            self.add_block(3, 64, 4, 2, 1, spectral=True),
+            self.add_block(64, 128, 4, 2, 1, spectral=True),
+            self.add_block(128, 256, 4, 2, 1, spectral=True),
+            self.add_block(256, 512, 4, 2, 1, spectral=True),
+            self.add_block(512, 1, 4, 2, 0, spectral=True, last_layer=True),
+        )
+
+    def add_block(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride,
+        padding,
+        spectral=False,
+        last_layer=False,
+    ):
+        if not last_layer:
+            block = nn.Sequential(
+                (
+                    nn.utils.spectral_norm(
+                        nn.Conv2d(
+                            in_channels=in_channels,
+                            out_channels=out_channels,
+                            kernel_size=kernel_size,
+                            stride=stride,
+                            padding=padding,
+                        )
+                    )
+                    if spectral
+                    else nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=out_channels,
+                        kernel_size=kernel_size,
+                        stride=stride,
+                        padding=padding,
+                    )
+                ),
+                nn.BatchNorm2d(num_features=out_channels),
+                nn.LeakyReLU(0.2),
+            )
+        else:
+            block = nn.Sequential(
+                nn.utils.spectral_norm(
+                    nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=out_channels,
+                        kernel_size=kernel_size,
+                        stride=stride,
+                        padding=padding,
+                    )
+                ),
+                nn.Sigmoid(),
+            )
+        return block
+
     def forward(self, x):
         x = self.conv_block1(x)
         return x
