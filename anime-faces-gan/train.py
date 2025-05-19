@@ -8,7 +8,7 @@ import torch
 
 wandb.init(
     project="GANS",
-    name="AnimeGAN",
+    name="AnimeGAN-SpectralNorm",
 )
 
 dataset = AnimeDataset(root_dir="./data.csv", transform=transform)
@@ -17,6 +17,7 @@ trainloader = DataLoader(dataset=dataset, batch_size=256, shuffle=True, num_work
 
 G = Generator(latent_size=128)
 D = Discriminator()
+D.make_spectral()
 
 lr = 0.0002
 opt_d = Adam(D.parameters(), lr=lr, betas=(0.5, 0.999))
@@ -76,10 +77,10 @@ def train_gan(num_epochs=10):
 
 
 if __name__ == "__main__":
-    train_gan(num_epochs=10)
+    train_gan(num_epochs=5)
 
     # Save the model
-    torch.save(G.state_dict(), "generator.pth")
-    torch.save(D.state_dict(), "discriminator.pth")
+    torch.save(G.state_dict(), "generator-SN.pth")
+    torch.save(D.state_dict(), "discriminator-SN.pth")
 
     wandb.finish()
