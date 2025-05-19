@@ -1,3 +1,9 @@
 # ignore folder gans
 
 gans/
+wandb/
+__pycache__/
+anime/
+
+# ignore models
+*.pth
