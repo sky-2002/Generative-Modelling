@@ -1,0 +1,1 @@
+wget https://efrosgans.eecs.berkeley.edu/cyclegan/datasets/monet2photo.zip
