@@ -8,5 +8,4 @@ anime/
 # ignore models
 *.pth
 *.jpg
-*.png
 *.jpeg
