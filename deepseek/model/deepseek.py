@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from torch import nn
 import torch
+from typing import Optional
 
 
 @dataclass
@@ -14,7 +15,64 @@ class DeepSeekModelConfig:
     kv_heads: int = (
         4  # number of groups of attention heads that share the same K and V matrices
     )
+
+    kv_latent_dim: int = 4
     pass
+
+
+class RoPE(nn.Module):
+
+    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
+        super().__init__()
+        self.dim = dim
+        self.max_seq_len = max_seq_len
+        self.base = base
+
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+
+        self._cached_cos = None
+        self._cached_sin = None
+        self._cached_seq_len = 0
+
+    def _compute_cos_sin(self, seq_len: int, device: torch.device):
+        if seq_len > self._cached_seq_len or self._cached_cos is None:
+
+            t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
+
+            freqs = torch.outer(t, self.inv_freq)
+
+            cos_vals = torch.cos(freqs)
+            sin_vals = torch.sin(freqs)
+
+            self._cached_cos = cos_vals
+            self._cached_sin = sin_vals
+            self._cached_seq_len = seq_len
+
+        return self._cached_cos[:seq_len], self._cached_sin[:seq_len]
+
+    def apply_rope(self, x: torch.Tensor, position_ids: Optional[torch.Tensor] = None):
+        """Apply RoPE to input tensor"""
+        batch_size, num_tokens, n_heads, head_dim = x.shape
+
+        cos, sin = self._compute_cos_sin(num_tokens, x.device)
+
+        if position_ids is not None:
+            cos = cos[position_ids]
+            sin = sin[position_ids]
+
+        cos = cos.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, head_dim//2]
+        sin = sin.unsqueeze(0).unsqueeze(2)
+
+        x1 = x[..., ::2]  # Even indices
+        x2 = x[..., 1::2]  # Odd indices
+
+        rotated_x1 = x1 * cos - x2 * sin
+        rotated_x2 = x1 * sin + x2 * cos
+
+        rotated_x = torch.stack([rotated_x1, rotated_x2], dim=-1).flatten(-2)
+
+        return rotated_x
 
 
 class MultiHeadAttention(nn.Module):
