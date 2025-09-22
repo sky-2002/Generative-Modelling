@@ -16,7 +16,12 @@ class DeepSeekModelConfig:
         4  # number of groups of attention heads that share the same K and V matrices
     )
 
+    mla_kv_heads: int = 4
+
     kv_latent_dim: int = 4
+    q_latent_dim: int = 4
+    max_batch_size: int = 8
+    max_token_len: int = 1024
     pass
 
 
@@ -228,6 +233,132 @@ class GroupedQueryAttention(nn.Module):
         context = attention_weights.view(batch_size, num_tokens, self.embed_dim)
         out = self.out_proj(context)  # B, T, input_dim
         return out
+
+
+# TODO: Revisit, looks buggy/brittle
+class MultiHeadLatentAttention(nn.Module):
+
+    def __init__(self, config: DeepSeekModelConfig):
+        super().__init__()
+        self.num_heads = config.num_attention_heads
+        self.input_dim = config.input_dim
+        self.embed_dim = config.embed_dim
+        self.head_dim = self.embed_dim // self.num_heads
+        self.mla_kv_heads = config.mla_kv_heads
+        self.kv_latent_dim = config.kv_latent_dim
+        self.q_latent_dim = config.q_latent_dim
+
+        self.rope = RoPE(dim=self.head_dim)
+        self.out_proj = nn.Linear(self.embed_dim, self.input_dim, bias=False)
+
+        # -------------------decoupled from RoPE)-----------------------------
+        # Query path - This feels to me like LoRa on Q
+        self.Wdq = nn.Linear(self.input_dim, self.q_latent_dim, bias=False)
+        self.Wuq = nn.Linear(self.q_latent_dim, self.embed_dim, bias=False)
+
+        # this will build KV latent and also construct K and V from it
+        self.Wdkv = nn.Linear(self.input_dim, self.kv_latent_dim, bias=False)
+        self.Wuk = nn.Linear(
+            self.kv_latent_dim, self.mla_kv_heads * self.head_dim, bias=False
+        )
+        self.Wuv = nn.Linear(
+            self.kv_latent_dim, self.mla_kv_heads * self.head_dim, bias=False
+        )
+
+        # only this will be cached
+        self.register_buffer(
+            "kv_latent_cache",
+            torch.zeros(
+                config.max_batch_size, config.max_token_len, self.kv_latent_dim
+            ),
+        )
+        # --------------------------------------------------------------------
+
+        # -------------RoPE path----------------------------------------------
+        self.Wkr = nn.Linear(self.input_dim, self.head_dim, bias=False)
+        self.Wqr = nn.Linear(self.q_latent_dim, self.embed_dim, bias=False)
+
+    def forward(self, x, start_pos=0):
+        batch_size, num_tokens, input_dim = x.shape
+        end_pos = start_pos + num_tokens
+
+        # ----- Queries -----
+        query_latent = self.Wdq(x)
+        Q = (
+            self.Wuq(query_latent)
+            .view(batch_size, num_tokens, self.num_heads, self.head_dim)
+            .transpose(1, 2)  # [B, H, T, D]
+        )
+
+        # ----- KV latent -----
+        kv_latent = self.Wdkv(x)  # [B, T, kv_latent_dim]
+        # update cache
+        self.kv_latent_cache[:batch_size, start_pos:end_pos] = kv_latent
+        kv_latent_all = self.kv_latent_cache[
+            :batch_size, :end_pos
+        ]  # [B, <=T, kv_latent_dim]
+
+        # build K, V from cached latent
+        K = self.Wuk(kv_latent_all).view(
+            batch_size, -1, self.mla_kv_heads, self.head_dim
+        )
+        V = self.Wuv(kv_latent_all).view(
+            batch_size, -1, self.mla_kv_heads, self.head_dim
+        )
+
+        # expand KV to match n_heads
+        K = K.repeat_interleave(
+            self.num_heads // self.mla_kv_heads, dim=2
+        )  # [B, S, H, D]
+        V = V.repeat_interleave(
+            self.num_heads // self.mla_kv_heads, dim=2
+        )  # [B, S, H, D]
+
+        K = K.transpose(1, 2)  # [B, H, S, D]
+        V = V.transpose(1, 2)  # [B, H, S, D]
+
+        # ----- RoPE path -----
+        Qr = self.rope.apply_rope(
+            self.Wqr(query_latent)
+            .view(batch_size, num_tokens, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
+
+        Kr = (
+            self.rope.apply_rope(self.Wkr(x))
+            .repeat_interleave(self.num_heads // self.mla_kv_heads, dim=2)
+            .view(batch_size, num_tokens, self.num_heads, self.head_dim)
+            .transpose(1, 2)  # [B, H, T, D]
+        )
+
+        # ----- Attention scores -----
+        attention_scores_1 = Q @ K.transpose(-2, -1)  # [B, H, T, S]
+        attention_scores_2 = Qr @ Kr.transpose(
+            -2, -1
+        )  # [B, H, T, T] (only current tokens)
+        attention_scores = (attention_scores_1 + attention_scores_2) / (
+            2 * self.head_dim
+        ) ** 0.5
+
+        # causal mask
+        causal_mask = torch.triu(
+            torch.ones(end_pos, end_pos, device=x.device), diagonal=1
+        )
+        attention_scores = attention_scores.masked_fill(
+            causal_mask.bool()[:, -num_tokens:], float("-inf")
+        )
+
+        attention_weights = torch.softmax(attention_scores, dim=-1)
+
+        # ----- Context -----
+        context = attention_weights @ V  # [B, H, T, D]
+        context = (
+            context.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, num_tokens, self.embed_dim)
+        )
+        out = self.out_proj(context)
+        return out, self.kv_latent_cache
 
 
 if __name__ == "__main__":
