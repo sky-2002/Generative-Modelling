@@ -7,19 +7,27 @@ from typing import Optional
 @dataclass
 class DeepSeekModelConfig:
     num_attention_heads: int = 8
-    input_dim: int = 512
-    embed_dim: int = 512
+    input_dim: int = 4
+    embed_dim: int = 32
     bias: bool = False
-    use_mla: bool = False
 
-    kv_heads: int = (
+    # configs needed for MLA
+    mla_kv_heads: int = (
         4  # number of groups of attention heads that share the same K and V matrices
     )
+    use_mla: bool = False
+    num_gpus: int = 1  # number of gpus
+    # n_local_heads
+    # this is maybe for cases where computation is distributed across gpus, will have to read more
 
-    mla_kv_heads: int = 4
+    q_latent_dim: int = 4  # dimension of latent used to build queries
+    kv_latent_dim: int = 4  # dimension of latent used to build keys and values
 
-    kv_latent_dim: int = 4
-    q_latent_dim: int = 4
+    # in official implementation, there are configs for
+    # rope and no-rope attention head dimensions, I am keeping it same as head dim
+    # since we concatenate the no-rope and rope queries and keys, they add these dimnensions
+    # to be later used to scaling attention scores
+
     max_batch_size: int = 8
     max_token_len: int = 1024
     pass
@@ -243,99 +251,140 @@ class MultiHeadLatentAttention(nn.Module):
         self.num_heads = config.num_attention_heads
         self.input_dim = config.input_dim
         self.embed_dim = config.embed_dim
+        self.n_local_heads = config.num_attention_heads // config.num_gpus
         self.head_dim = self.embed_dim // self.num_heads
         self.mla_kv_heads = config.mla_kv_heads
         self.kv_latent_dim = config.kv_latent_dim
         self.q_latent_dim = config.q_latent_dim
 
         self.rope = RoPE(dim=self.head_dim)
-        self.out_proj = nn.Linear(self.embed_dim, self.input_dim, bias=False)
+        self.out_proj = nn.Linear(
+            self.num_heads * self.head_dim, self.input_dim, bias=False
+        )
 
-        # -------------------decoupled from RoPE)-----------------------------
-        # Query path - This feels to me like LoRa on Q
-        self.Wdq = nn.Linear(self.input_dim, self.q_latent_dim, bias=False)
-        self.Wuq = nn.Linear(self.q_latent_dim, self.embed_dim, bias=False)
+        if self.q_latent_dim == 0:
+            self.Wq = nn.Linear(
+                self.input_dim, self.num_heads * self.head_dim, bias=False
+            )
+        else:
+            # -------------------(decoupled from RoPE)-----------------------------
+            # Query path - This feels to me like LoRa on Q
+            # because instead of Wq (input_dim, input_dim) we now have
+            # Wdq(input_dim, q_latent_dim) and Wuq(q_latent_dim, input_dim)
+            self.Wdq = nn.Linear(self.input_dim, self.q_latent_dim, bias=False)
+            self.q_norm = RMSNorm(self.q_latent_dim)
+            self.Wuq = nn.Linear(
+                self.q_latent_dim, self.num_heads * self.head_dim, bias=False
+            )
 
         # this will build KV latent and also construct K and V from it
         self.Wdkv = nn.Linear(self.input_dim, self.kv_latent_dim, bias=False)
+        self.kv_norm = RMSNorm(self.kv_latent_dim)
         self.Wuk = nn.Linear(
-            self.kv_latent_dim, self.mla_kv_heads * self.head_dim, bias=False
-        )
+            self.kv_latent_dim, self.head_dim, bias=False
+        )  # here I am not using num_heads because we will use kv heads (grouped query attention)
         self.Wuv = nn.Linear(
             self.kv_latent_dim, self.mla_kv_heads * self.head_dim, bias=False
         )
 
-        # only this will be cached
+        # cache the kv latent and the roped keys
         self.register_buffer(
             "kv_latent_cache",
             torch.zeros(
                 config.max_batch_size, config.max_token_len, self.kv_latent_dim
             ),
+            persistent=False,  # I won't store on disk
+        )
+        self.register_buffer(
+            "keys_roped",
+            torch.zeros(
+                config.max_batch_size,
+                config.max_token_len,
+                self.mla_kv_heads,
+                # I could have not used these heads, then we have same keys for each head,4
+                # here it is same for a group of attention heads which come under one kv head
+                self.head_dim,
+            ),
+            persistent=False,
         )
         # --------------------------------------------------------------------
 
         # -------------RoPE path----------------------------------------------
-        self.Wkr = nn.Linear(self.input_dim, self.head_dim, bias=False)
+        self.Wkr = nn.Linear(
+            self.input_dim, self.mla_kv_heads * self.head_dim, bias=False
+        )
         self.Wqr = nn.Linear(self.q_latent_dim, self.embed_dim, bias=False)
 
     def forward(self, x, start_pos=0):
         batch_size, num_tokens, input_dim = x.shape
         end_pos = start_pos + num_tokens
+        S = end_pos  # total cached sequence length
 
         # ----- Queries -----
-        query_latent = self.Wdq(x)
-        Q = (
-            self.Wuq(query_latent)
-            .view(batch_size, num_tokens, self.num_heads, self.head_dim)
-            .transpose(1, 2)  # [B, H, T, D]
-        )
+        if self.q_latent_dim == 0:
+            Q = (
+                self.Wq(x)
+                .view(batch_size, num_tokens, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )  # [B, num_heads, T, head_dim]
+        else:
+            query_latent = self.Wdq(x)
+            query_latent = self.q_norm(query_latent)
+            Q = (
+                self.Wuq(query_latent)
+                .view(batch_size, num_tokens, self.num_heads, self.head_dim)
+                .transpose(1, 2)  # [B, num_heads, T, head_dim]
+            )
+        # ----- RoPE path -----
+        if self.q_latent_dim == 0:
+            Qr = self.rope.apply_rope(Q)
+        else:
+            Qr = self.rope.apply_rope(
+                self.Wqr(query_latent)
+                .view(batch_size, num_tokens, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+        # ---------------------
 
         # ----- KV latent -----
         kv_latent = self.Wdkv(x)  # [B, T, kv_latent_dim]
         # update cache
-        self.kv_latent_cache[:batch_size, start_pos:end_pos] = kv_latent
+        self.kv_latent_cache[:batch_size, start_pos:end_pos] = self.kv_norm(kv_latent)
+
         kv_latent_all = self.kv_latent_cache[
             :batch_size, :end_pos
-        ]  # [B, <=T, kv_latent_dim]
+        ]  # [B, T, kv_latent_dim]
 
-        # build K, V from cached latent
-        K = self.Wuk(kv_latent_all).view(
-            batch_size, -1, self.mla_kv_heads, self.head_dim
-        )
+        # [B, num_heads, T, head_dim] x [head_dim, kv_latent_dim]
+        Q_absorbed = Q @ self.Wuk.weight.T  # B, num_heads, T, kv_latent_dim
+
         V = self.Wuv(kv_latent_all).view(
-            batch_size, -1, self.mla_kv_heads, self.head_dim
-        )
-
-        # expand KV to match n_heads
-        K = K.repeat_interleave(
-            self.num_heads // self.mla_kv_heads, dim=2
-        )  # [B, S, H, D]
+            batch_size, S, self.mla_kv_heads, self.head_dim
+        )  # [B, S, mla_kv_heads, head_dim]
+        # expand V to match n_heads
         V = V.repeat_interleave(
             self.num_heads // self.mla_kv_heads, dim=2
-        )  # [B, S, H, D]
+        )  # [B, T, num_heads, head_dim]
 
-        K = K.transpose(1, 2)  # [B, H, S, D]
         V = V.transpose(1, 2)  # [B, H, S, D]
 
         # ----- RoPE path -----
-        Qr = self.rope.apply_rope(
-            self.Wqr(query_latent)
-            .view(batch_size, num_tokens, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-
+        K_pos_encoding = self.rope.apply_rope(self.Wkr(x)).view(
+            batch_size, num_tokens, self.mla_kv_heads, self.head_dim
+        )  # B, T, mla_kv_heads, head_dim
+        self.keys_roped[:batch_size, start_pos:end_pos] = K_pos_encoding
+        keys_roped_all = self.keys_roped[:batch_size, :end_pos]
         Kr = (
-            self.rope.apply_rope(self.Wkr(x))
-            .repeat_interleave(self.num_heads // self.mla_kv_heads, dim=2)
-            .view(batch_size, num_tokens, self.num_heads, self.head_dim)
-            .transpose(1, 2)  # [B, H, T, D]
+            keys_roped_all.repeat_interleave(self.num_heads // self.mla_kv_heads, dim=2)
+            .view(batch_size, S, self.num_heads, self.head_dim)
+            .transpose(1, 2)  # [B, S, T, head_dim]
         )
 
         # ----- Attention scores -----
-        attention_scores_1 = Q @ K.transpose(-2, -1)  # [B, H, T, S]
-        attention_scores_2 = Qr @ Kr.transpose(
-            -2, -1
-        )  # [B, H, T, T] (only current tokens)
+        # doing unsqueeze to account for heads, since kv cache is only one, not per head
+        attention_scores_1 = Q_absorbed @ kv_latent_all.unsqueeze(1).transpose(2, 3)
+
+        attention_scores_2 = Qr @ Kr.transpose(-2, -1)  # [B, num_heads, T, T]
         attention_scores = (attention_scores_1 + attention_scores_2) / (
             2 * self.head_dim
         ) ** 0.5
@@ -362,12 +411,14 @@ class MultiHeadLatentAttention(nn.Module):
 
 
 if __name__ == "__main__":
-    x = torch.rand(1, 2, 3)
     config = DeepSeekModelConfig()
+    x = torch.rand(1, 2, config.input_dim)
     mha = MultiHeadAttention(config)
     mqa = MultiQueryAttention(config)
     gqa = GroupedQueryAttention(config)
+    mhla = MultiHeadLatentAttention(config)
 
     print(sum(p.numel() for p in mha.parameters()))
     print(sum(p.numel() for p in mqa.parameters()))
     print(sum(p.numel() for p in gqa.parameters()))
+    print(sum(p.numel() for p in mhla.parameters()))
