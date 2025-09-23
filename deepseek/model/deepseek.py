@@ -11,6 +11,7 @@ class DeepSeekModelConfig:
     input_dim: int = 1024
     embed_dim: int = 1024
     bias: bool = False
+
     kv_heads: int = 4  # number of key-value heads for grouped query attention
 
     # configs needed for MLA
