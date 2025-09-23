@@ -243,7 +243,18 @@ class GroupedQueryAttention(nn.Module):
         return out
 
 
-# TODO: Revisit, looks buggy/brittle
+# I have copied RMSNorm directly from Deepseek-V3 repo
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor):
+        return F.rms_norm(x, (self.dim,), self.weight, self.eps)
+
+
 class MultiHeadLatentAttention(nn.Module):
 
     def __init__(self, config: DeepSeekModelConfig):
