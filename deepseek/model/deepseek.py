@@ -255,6 +255,9 @@ class RMSNorm(nn.Module):
         return F.rms_norm(x, (self.dim,), self.weight, self.eps)
 
 
+# TODO:
+# 1. Try out grouped query attention styled MLA, where each kv head has its own latent cache
+# 2.Try out sliding window attention, I read about this in gemma paper
 class MultiHeadLatentAttention(nn.Module):
 
     def __init__(self, config: DeepSeekModelConfig):
