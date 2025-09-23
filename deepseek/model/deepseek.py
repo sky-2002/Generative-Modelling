@@ -2,14 +2,16 @@ from dataclasses import dataclass
 from torch import nn
 import torch
 from typing import Optional
+import torch.nn.functional as F
 
 
 @dataclass
 class DeepSeekModelConfig:
     num_attention_heads: int = 8
-    input_dim: int = 4
-    embed_dim: int = 32
+    input_dim: int = 1024
+    embed_dim: int = 1024
     bias: bool = False
+    kv_heads: int = 4  # number of key-value heads for grouped query attention
 
     # configs needed for MLA
     mla_kv_heads: int = (
@@ -30,7 +32,82 @@ class DeepSeekModelConfig:
 
     max_batch_size: int = 8
     max_token_len: int = 1024
-    pass
+
+    num_shared_experts: int = 8
+    num_routed_experts: int = 16
+    moe_top_k: int = 2
+    expert_intermediate_dim: int = 8192
+
+
+class Expert(nn.Module):
+
+    def __init__(self, input_dim: int, intermediate_dim: int):
+        super().__init__()
+        self.w1 = nn.Linear(input_dim, intermediate_dim)
+        self.w11 = nn.Linear(input_dim, intermediate_dim)
+        self.w2 = nn.Linear(intermediate_dim, input_dim)
+
+    def forward(self, x):
+        return self.w2(F.silu(self.w1(x)) * self.w11(x))
+
+
+class MoE(nn.Module):
+    def __init__(self, config: DeepSeekModelConfig):
+        super().__init__()
+        self.num_shared_experts = config.num_shared_experts
+        self.num_routed_experts = config.num_routed_experts
+        self.num_local_experts = config.num_routed_experts // config.num_gpus
+        self.top_k = config.moe_top_k
+
+        self.expert_selector = nn.Linear(
+            config.input_dim, self.num_routed_experts, bias=False
+        )
+        self.routed_experts = nn.ModuleList(
+            [
+                Expert(config.input_dim, config.expert_intermediate_dim)
+                for _ in range(self.num_routed_experts)
+            ]
+        )
+        self.shared_experts = Expert(
+            config.input_dim, config.expert_intermediate_dim * self.num_shared_experts
+        )
+
+    def forward(self, x):
+        batch_size, num_tokens, input_dim = x.shape
+        gate_output, topk_indices = self.topk_routing(x)
+        x = x.view(
+            batch_size * num_tokens, input_dim
+        )  # so now it is like a list of tokens
+        gate_output = gate_output.view(batch_size * num_tokens, -1)
+
+        topk_indices = topk_indices.view(batch_size * num_tokens, -1)
+
+        y = torch.zeros_like(x)
+        counts = torch.bincount(
+            topk_indices.flatten(), minlength=self.num_routed_experts
+        ).tolist()
+        for i in range(self.num_routed_experts):
+            if counts[i] == 0:
+                continue
+            expert = self.routed_experts[i]
+
+            idx, expert_rank = torch.where(topk_indices == i)
+            y[idx] += expert(x[idx]) * gate_output[idx, expert_rank, None]
+
+        z = self.shared_experts(x)
+        return (y + z).view(batch_size, num_tokens, input_dim)
+
+    def topk_routing(self, x, bias=None):
+        batch_size, num_tokens, input_dim = x.shape
+
+        expert_logits = self.expert_selector(x)  # B, T, num_experts
+        if bias:
+            expert_logits = expert_logits + bias
+        topk_logits, topk_indices = torch.topk(expert_logits, k=self.top_k, dim=-1)
+        zeros = torch.full_like(expert_logits, float("-inf"))
+        sparse_logits = zeros.scatter(dim=-1, index=topk_indices, src=topk_logits)
+        gate_output = sparse_logits.softmax(dim=-1)
+        return gate_output, topk_indices
 
 
 class RoPE(nn.Module):
@@ -431,8 +508,10 @@ if __name__ == "__main__":
     mqa = MultiQueryAttention(config)
     gqa = GroupedQueryAttention(config)
     mhla = MultiHeadLatentAttention(config)
+    moe = MoE(config)
 
     print(sum(p.numel() for p in mha.parameters()))
     print(sum(p.numel() for p in mqa.parameters()))
     print(sum(p.numel() for p in gqa.parameters()))
     print(sum(p.numel() for p in mhla.parameters()))
+    print(sum(p.numel() for p in moe.parameters()))
