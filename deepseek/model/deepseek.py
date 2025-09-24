@@ -39,6 +39,9 @@ class DeepSeekModelConfig:
     moe_top_k: int = 2
     expert_intermediate_dim: int = 8192
 
+    num_dense_ffn: int = 2
+    num_moe_ffn: int = 4
+
     mtp_depth: int = 3
     vocab_size: int = 50257
 
@@ -585,20 +588,55 @@ class BasicMultiTokenPrediction(nn.Module):
 
 class TransformerBlock(nn.Module):
 
-    def __init__(self, config: DeepSeekModelConfig):
+    def __init__(self, config: DeepSeekModelConfig, moe: bool = True):
         super().__init__()
         self.rms_norm_1 = RMSNorm(config.input_dim)
         self.mhla = MultiHeadLatentAttention(config)
         self.rms_norm_2 = RMSNorm(config.input_dim)
-        self.moe = MoE(config)
-        self.final_rms_norm = RMSNorm(config.input_dim)
-        self.output_layer = nn.Linear(config.input_dim, config.input_dim, bias=False)
+
+        if moe:
+            self.ffn = MoE(config)
+        else:
+            self.ffn = Expert(config.input_dim, config.expert_intermediate_dim)
 
     def forward(self, x):
         x = x + self.mhla(self.rms_norm_1(x))
-        x = x + self.moe(self.rms_norm_2(x))
-        x = self.final_rms_norm(x)
-        return self.output_layer(x)
+        x = x + self.ffn(self.rms_norm_2(x))
+        return x
+
+
+class DeepseekInspiredModel(nn.Module):
+    def __init__(self, config: DeepSeekModelConfig):
+        super().__init__()
+        self.config = config
+        self.token_embedding = nn.Embedding(config.vocab_size, config.input_dim)
+        self.position_embedding = nn.Embedding(config.max_token_len, config.input_dim)
+
+        _blocks = [
+            TransformerBlock(config, moe=False) for _ in range(config.num_dense_ffn)
+        ]
+        _blocks.extend(
+            [TransformerBlock(config, moe=True) for _ in range(config.num_moe_ffn)]
+        )
+        self.transformer_blocks = nn.ModuleList(_blocks)
+
+        self.ln_f = RMSNorm(config.input_dim)
+        self.head = nn.Linear(config.input_dim, config.vocab_size, bias=False)
+        self.head.weight = self.token_embedding.weight
+
+    def forward(self, x):
+        batch_size, num_tokens, input_dim = x.shape
+
+        token_embeddings = self.token_embedding(x)
+        position_ids = torch.arange(0, num_tokens, device=x.device).unsqueeze(0)
+        position_embeddings = self.position_embedding(position_ids)
+        h = token_embeddings + position_embeddings
+
+        for block in self.transformer_blocks:
+            h = block(h)
+        h = self.ln_f(h)
+        logits = self.head(h)
+        return logits
 
 
 if __name__ == "__main__":
