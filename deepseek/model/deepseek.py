@@ -39,6 +39,9 @@ class DeepSeekModelConfig:
     moe_top_k: int = 2
     expert_intermediate_dim: int = 8192
 
+    mtp_depth: int = 3
+    vocab_size: int = 50257
+
 
 class Expert(nn.Module):
 
@@ -502,17 +505,91 @@ class MultiHeadLatentAttention(nn.Module):
         return out, self.kv_latent_cache
 
 
+# Note: I might not use this in training, will do normal single token prediction only
+class BasicMultiTokenPrediction(nn.Module):
+
+    def __init__(self, config: DeepSeekModelConfig):
+        super().__init__()
+
+        # If k is mtp_depth, and current token position is i
+        # this module predicts next k tokens, so from
+        # (i+1) to (i+k)
+        self.k = config.mtp_depth
+        self.vocab_size = config.vocab_size
+        self.rms_norm = RMSNorm(config.input_dim)
+        self.embed = nn.Embedding(self.vocab_size, config.input_dim)
+        self.unembed = nn.Linear(config.input_dim, self.vocab_size, bias=False)
+        self.unembed.weight = self.embed.weight
+
+        self.projections = nn.ModuleList(
+            [nn.Linear(2 * config.input_dim, config.input_dim) for _ in range(self.k)]
+        )
+
+        self.transformers = nn.ModuleList(
+            [
+                nn.TransformerEncoderLayer(config.input_dim, config.num_attention_heads)
+                for _ in range(self.k)
+            ]
+        )
+
+    def forward(self, x):
+        # x is the final hidden states for all tokens that we get after all transformer blocks,
+        # so it is just before the final un-ebedding layer
+        batch_size, num_tokens, input_size = x.shape
+        # if num_tokens is 6
+        # i = 0, 1, 2, 3, 4, 5
+        # k=3
+        # i can predict till 2+3 = 5
+        # so i have to iterate i from 0 to 2 only
+        # 2 = 6(num_tokens)-3(k)-1
+        # so I have to go till x[:,num_tokens-k, :]
+
+        logits = []
+
+        for ith_token_pos in range(0, num_tokens - self.k):
+            hidden_state_ith_token = x[:, ith_token_pos, :]
+
+            logits_k = []
+            for k in range(self.k):
+
+                future_position = ith_token_pos + k + 1
+                token_embedding = x[
+                    :, future_position, :
+                ]  # considering x as the final hidden state after all blocks
+
+                _h = self.rms_norm(hidden_state_ith_token)
+                _e = self.rms_norm(token_embedding)
+                merged = torch.cat([_h, _e], dim=1)
+
+                proj = self.projections[k](merged).unsqueeze(0)
+                out = self.transformers[k](proj)
+                hidden_state_current = out.squeeze(0)
+                _logits = self.unembed(hidden_state_current)
+                logits_k.append(_logits)
+
+                hidden_state_ith_token = hidden_state_current
+
+            logits_k = torch.stack(logits_k, dim=1)
+            logits.append(logits_k)
+
+        logits = torch.stack(logits, dim=0)
+        logits = logits.permute(1, 0, 2, 3).contiguous()
+        return logits
+
+
 if __name__ == "__main__":
     config = DeepSeekModelConfig()
-    x = torch.rand(1, 2, config.input_dim)
+    x = torch.rand(1, 10, config.input_dim)
     mha = MultiHeadAttention(config)
     mqa = MultiQueryAttention(config)
     gqa = GroupedQueryAttention(config)
     mhla = MultiHeadLatentAttention(config)
     moe = MoE(config)
+    bmtp = BasicMultiTokenPrediction(config)
 
     print(sum(p.numel() for p in mha.parameters()))
     print(sum(p.numel() for p in mqa.parameters()))
     print(sum(p.numel() for p in gqa.parameters()))
     print(sum(p.numel() for p in mhla.parameters()))
     print(sum(p.numel() for p in moe.parameters()))
+    print(sum(p.numel() for p in bmtp.parameters()))
