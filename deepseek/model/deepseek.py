@@ -508,7 +508,7 @@ class MultiHeadLatentAttention(nn.Module):
             .view(batch_size, num_tokens, self.embed_dim)
         )
         out = self.out_proj(context)
-        return out, self.kv_latent_cache
+        return out
 
 
 # Note: I might not use this in training, will do normal single token prediction only
@@ -583,19 +583,28 @@ class BasicMultiTokenPrediction(nn.Module):
         return logits
 
 
+class TransformerBlock(nn.Module):
+
+    def __init__(self, config: DeepSeekModelConfig):
+        super().__init__()
+        self.rms_norm_1 = RMSNorm(config.input_dim)
+        self.mhla = MultiHeadLatentAttention(config)
+        self.rms_norm_2 = RMSNorm(config.input_dim)
+        self.moe = MoE(config)
+        self.final_rms_norm = RMSNorm(config.input_dim)
+        self.output_layer = nn.Linear(config.input_dim, config.input_dim, bias=False)
+
+    def forward(self, x):
+        x = x + self.mhla(self.rms_norm_1(x))
+        x = x + self.moe(self.rms_norm_2(x))
+        x = self.final_rms_norm(x)
+        return self.output_layer(x)
+
+
 if __name__ == "__main__":
     config = DeepSeekModelConfig()
     x = torch.rand(1, 10, config.input_dim)
-    mha = MultiHeadAttention(config)
-    mqa = MultiQueryAttention(config)
-    gqa = GroupedQueryAttention(config)
-    mhla = MultiHeadLatentAttention(config)
-    moe = MoE(config)
-    bmtp = BasicMultiTokenPrediction(config)
 
-    print(sum(p.numel() for p in mha.parameters()))
-    print(sum(p.numel() for p in mqa.parameters()))
-    print(sum(p.numel() for p in gqa.parameters()))
-    print(sum(p.numel() for p in mhla.parameters()))
-    print(sum(p.numel() for p in moe.parameters()))
-    print(sum(p.numel() for p in bmtp.parameters()))
+    tb = TransformerBlock(config)
+    print(sum(p.numel() for p in tb.parameters()))
+    print(tb(x).shape)
