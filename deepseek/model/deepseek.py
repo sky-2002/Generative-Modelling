@@ -432,13 +432,15 @@ class MultiHeadLatentAttention(nn.Module):
             )
         # ----- RoPE path -----
         if self.q_latent_dim == 0:
-            Qr = self.rope.apply_rope(Q)
+            Qr = self.rope.apply_rope(
+                Q.view(batch_size, num_tokens, self.num_heads, self.head_dim)
+            ).transpose(1, 2)
         else:
             Qr = self.rope.apply_rope(
-                self.Wqr(query_latent)
-                .view(batch_size, num_tokens, self.num_heads, self.head_dim)
-                .transpose(1, 2)
-            )
+                self.Wqr(query_latent).view(
+                    batch_size, num_tokens, self.num_heads, self.head_dim
+                )
+            ).transpose(1, 2)
         # ---------------------
 
         # ----- KV latent -----
@@ -464,9 +466,13 @@ class MultiHeadLatentAttention(nn.Module):
         V = V.transpose(1, 2)  # [B, H, S, D]
 
         # ----- RoPE path -----
-        K_pos_encoding = self.rope.apply_rope(self.Wkr(x)).view(
-            batch_size, num_tokens, self.mla_kv_heads, self.head_dim
-        )  # B, T, mla_kv_heads, head_dim
+        K_pos_encoding = self.rope.apply_rope(
+            self.Wkr(x)
+            .view(batch_size, num_tokens, self.mla_kv_heads, self.head_dim)
+            .transpose(1, 2)
+        ).transpose(
+            1, 2
+        )  # B, T, mla_kv_heads head_dim
         self.keys_roped[:batch_size, start_pos:end_pos] = K_pos_encoding
         keys_roped_all = self.keys_roped[:batch_size, :end_pos]
         Kr = (
