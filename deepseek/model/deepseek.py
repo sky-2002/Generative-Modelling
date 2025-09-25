@@ -629,7 +629,7 @@ class DeepseekInspiredModel(nn.Module):
         self.head.weight = self.token_embedding.weight
 
     def forward(self, x):
-        batch_size, num_tokens, input_dim = x.shape
+        batch_size, num_tokens = x.shape
 
         token_embeddings = self.token_embedding(x)
         position_ids = torch.arange(0, num_tokens, device=x.device).unsqueeze(0)
@@ -645,7 +645,7 @@ class DeepseekInspiredModel(nn.Module):
 
 if __name__ == "__main__":
     config = DeepSeekModelConfig()
-    x = torch.rand(1, 10, config.input_dim)
+    x = torch.rand(1, 10)
 
     dim = DeepseekInspiredModel(config)
 
