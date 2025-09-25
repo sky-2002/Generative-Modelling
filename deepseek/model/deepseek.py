@@ -11,6 +11,7 @@ class DeepSeekModelConfig:
     input_dim: int = 1024
     embed_dim: int = 1024
     bias: bool = False
+    dropout: float = 0.1
 
     kv_heads: int = 4  # number of key-value heads for grouped query attention
 
@@ -53,9 +54,10 @@ class Expert(nn.Module):
         self.w1 = nn.Linear(input_dim, intermediate_dim)
         self.w11 = nn.Linear(input_dim, intermediate_dim)
         self.w2 = nn.Linear(intermediate_dim, input_dim)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
-        return self.w2(F.silu(self.w1(x)) * self.w11(x))
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w11(x)))
 
 
 class MoE(nn.Module):
@@ -354,6 +356,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.mla_kv_heads = config.mla_kv_heads
         self.kv_latent_dim = config.kv_latent_dim
         self.q_latent_dim = config.q_latent_dim
+        self.dropout = nn.Dropout(config.dropout)
 
         self.rope = RoPE(dim=self.head_dim)
         self.out_proj = nn.Linear(
@@ -502,6 +505,7 @@ class MultiHeadLatentAttention(nn.Module):
         )
 
         attention_weights = torch.softmax(attention_scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
 
         # ----- Context -----
         context = attention_weights @ V  # [B, H, T, D]
@@ -643,6 +647,11 @@ if __name__ == "__main__":
     config = DeepSeekModelConfig()
     x = torch.rand(1, 10, config.input_dim)
 
-    tb = TransformerBlock(config)
-    print(sum(p.numel() for p in tb.parameters()))
-    print(tb(x).shape)
+    dim = DeepseekInspiredModel(config)
+
+    print(
+        f"Number of parameters (in millions): {sum(p.numel() for p in dim.parameters()) / 1_000_000}"
+    )
+    print(
+        f"Number of parameters (in GB): {sum(p.numel() for p in dim.parameters())*4/1024**3:.2f} GB"
+    )
