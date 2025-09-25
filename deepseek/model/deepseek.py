@@ -459,7 +459,7 @@ class MultiHeadLatentAttention(nn.Module):
         ]  # [B, T, kv_latent_dim]
 
         # [B, num_heads, T, head_dim] x [head_dim, kv_latent_dim]
-        Q_absorbed = Q @ self.Wuk.weight.T  # B, num_heads, T, kv_latent_dim
+        Q_absorbed = Q @ self.Wuk.weight  # B, num_heads, T, kv_latent_dim
 
         V = self.Wuv(kv_latent_all).view(
             batch_size, S, self.mla_kv_heads, self.head_dim
