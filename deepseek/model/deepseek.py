@@ -452,7 +452,9 @@ class MultiHeadLatentAttention(nn.Module):
         # ----- KV latent -----
         kv_latent = self.Wdkv(x)  # [B, T, kv_latent_dim]
         # update cache
-        self.kv_latent_cache[:batch_size, start_pos:end_pos] = self.kv_norm(kv_latent)
+        self.kv_latent_cache[:batch_size, start_pos:end_pos] = self.kv_norm(
+            kv_latent
+        ).detach()
 
         kv_latent_all = self.kv_latent_cache[
             :batch_size, :end_pos
@@ -479,7 +481,7 @@ class MultiHeadLatentAttention(nn.Module):
         ).transpose(
             1, 2
         )  # B, T, mla_kv_heads head_dim
-        self.keys_roped[:batch_size, start_pos:end_pos] = K_pos_encoding
+        self.keys_roped[:batch_size, start_pos:end_pos] = K_pos_encoding.detach()
         keys_roped_all = self.keys_roped[:batch_size, :end_pos]
         Kr = (
             keys_roped_all.repeat_interleave(self.num_heads // self.mla_kv_heads, dim=2)
