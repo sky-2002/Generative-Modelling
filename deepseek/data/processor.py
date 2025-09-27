@@ -140,6 +140,43 @@ class TinyStoriesProcesssor:
 
         return x, y
 
+    def prepare_dataset_memory(
+        self,
+        dataset_name: str = "roneneldan/TinyStories",
+        debug: bool = False,
+        splits: List[str] = ["train", "validation", "test"],
+    ):
+        """Load, tokenize, and keep dataset fully in memory."""
+        print("Loading dataset into memory...")
+        ds = load_dataset(dataset_name)
+
+        if debug:
+            print("Debug mode: using a small subset of the data")
+            for split in ds:
+                ds[split] = ds[split].select(range(min(10240, len(ds[split]))))
+
+        for split in splits:
+            print(f"\nProcessing {split} split (in memory)...")
+            tokenized = ds[split].map(
+                self.process,
+                desc=f"tokenizing {split} split",
+            )
+            tokenized = tokenized.filter(lambda x: x["len"] > 0)
+            print(f"After processing: {len(tokenized)} valid examples")
+
+            # Flatten into one long array of token IDs
+            arr = np.concatenate(tokenized["input_ids"])
+            arr = torch.tensor(arr, dtype=torch.long)
+            self.memory_datasets[split] = arr
+
+        return self.memory_datasets
+
+    def get_dataset(self, split: str = "train") -> torch.Tensor:
+        """Return in-memory dataset tensor for a split."""
+        if split not in self.memory_datasets:
+            raise ValueError(f"Split {split} not found. Call prepare_dataset_memory first.")
+        return self.memory_datasets[split]
+
 
 if __name__ == "__main__":
     processor = TinyStoriesProcesssor(tokenizer_name="gpt2", max_length=512)
