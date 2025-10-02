@@ -49,12 +49,12 @@ class DeepSeekModelConfig:
 
 class Expert(nn.Module):
 
-    def __init__(self, input_dim: int, intermediate_dim: int):
+    def __init__(self, input_dim: int, intermediate_dim: int, dropout: float):
         super().__init__()
         self.w1 = nn.Linear(input_dim, intermediate_dim)
         self.w11 = nn.Linear(input_dim, intermediate_dim)
         self.w2 = nn.Linear(intermediate_dim, input_dim)
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         return self.dropout(self.w2(F.silu(self.w1(x)) * self.w11(x)))
@@ -73,12 +73,14 @@ class MoE(nn.Module):
         )
         self.routed_experts = nn.ModuleList(
             [
-                Expert(config.input_dim, config.expert_intermediate_dim)
+                Expert(config.input_dim, config.expert_intermediate_dim, config.dropout)
                 for _ in range(self.num_routed_experts)
             ]
         )
         self.shared_experts = Expert(
-            config.input_dim, config.expert_intermediate_dim * self.num_shared_experts
+            config.input_dim,
+            config.expert_intermediate_dim * self.num_shared_experts,
+            config.dropout,
         )
 
     def forward(self, x):
@@ -603,7 +605,9 @@ class TransformerBlock(nn.Module):
         if moe:
             self.ffn = MoE(config)
         else:
-            self.ffn = Expert(config.input_dim, config.expert_intermediate_dim)
+            self.ffn = Expert(
+                config.input_dim, config.expert_intermediate_dim, config.dropout
+            )
 
     def forward(self, x):
         x = x + self.mhla(self.rms_norm_1(x))
