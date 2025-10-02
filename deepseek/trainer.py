@@ -181,11 +181,16 @@ class Trainer:
 
                 # Log expert usage ---
                 for m in self.model.modules():
-                    if hasattr(m, "expert_usage"):
+                    if hasattr(m, "expert_usage") and hasattr(m, "expert_bias"):
                         usage = torch.stack(m.expert_usage).sum(0)  # total counts
                         total = usage.sum().item() + 1e-9
                         for i, count in enumerate(usage.tolist()):
                             log_dict[f"expert_usage/expert_{i}"] = count / total
+
+                        for i, bias_val in enumerate(
+                            m.expert_bias.detach().cpu().tolist()
+                        ):
+                            log_dict[f"expert_bias/expert_{i}"] = bias_val
                         m.expert_usage = []  # reset after logging
                         # break  # if only one MoE in model
 
