@@ -172,14 +172,36 @@ class Trainer:
                     f"Iter {it}: train {losses['train']:.4f}, val {losses['val']:.4f}, "
                     f"lr {lr:.2e}, time {elapsed:.1f}s"
                 )
-                wandb.log(
-                    {
-                        "train_loss": losses["train"],
-                        "val_loss": losses["val"],
-                        "lr": lr,
-                        "iter": it,
-                    }
+                log_dict = {
+                    "train_loss": losses["train"],
+                    "val_loss": losses["val"],
+                    "lr": lr,
+                    "iter": it,
+                }
+
+                # Log expert usage ---
+                for m in self.model.modules():
+                    if hasattr(m, "expert_usage"):
+                        usage = torch.stack(m.expert_usage).sum(0)  # total counts
+                        total = usage.sum().item() + 1e-9
+                        for i, count in enumerate(usage.tolist()):
+                            log_dict[f"expert_usage/expert_{i}"] = count / total
+                        m.expert_usage = []  # reset after logging
+                        # break  # if only one MoE in model
+
+                # Log gradient norm ---
+                total_norm = torch.norm(
+                    torch.stack(
+                        [
+                            p.grad.norm()
+                            for p in self.model.parameters()
+                            if p.grad is not None
+                        ]
+                    )
                 )
+                log_dict["grad_norm"] = total_norm.item()
+
+                wandb.log(log_dict)
                 self.save_checkpoint(it, losses["val"])
 
             if it % 50 == 0:
