@@ -39,6 +39,7 @@ class DeepSeekModelConfig:
     num_routed_experts: int = 16
     moe_top_k: int = 2
     expert_intermediate_dim: int = 8192
+    eta: float = 0.05
 
     num_dense_ffn: int = 2
     num_moe_ffn: int = 4
@@ -82,10 +83,12 @@ class MoE(nn.Module):
             config.expert_intermediate_dim * self.num_shared_experts,
             config.dropout,
         )
+        self.eta = config.eta
+        self.register_buffer("expert_bias", torch.zeros(self.num_routed_experts))
 
     def forward(self, x):
         batch_size, num_tokens, input_dim = x.shape
-        gate_output, topk_indices = self.topk_routing(x)
+        gate_output, topk_indices = self.topk_routing(x, self.expert_bias)
         x = x.view(
             batch_size * num_tokens, input_dim
         )  # so now it is like a list of tokens
@@ -96,6 +99,11 @@ class MoE(nn.Module):
         expert_counts = torch.bincount(
             topk_indices.flatten(), minlength=self.num_routed_experts
         )
+
+        with torch.no_grad():
+            avg = expert_counts.float().mean()
+            err = expert_counts.float() - avg
+            self.expert_bias += -self.eta * err.sign()
 
         # Save for logging
         if hasattr(self, "expert_usage"):
@@ -123,7 +131,7 @@ class MoE(nn.Module):
         batch_size, num_tokens, input_dim = x.shape
 
         expert_logits = self.expert_selector(x)  # B, T, num_experts
-        if bias:
+        if bias is not None:
             expert_logits = expert_logits + bias
         topk_logits, topk_indices = torch.topk(expert_logits, k=self.top_k, dim=-1)
         zeros = torch.full_like(expert_logits, float("-inf"))
