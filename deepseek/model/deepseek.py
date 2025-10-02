@@ -93,10 +93,21 @@ class MoE(nn.Module):
 
         topk_indices = topk_indices.view(batch_size * num_tokens, -1)
 
-        y = torch.zeros_like(x)
-        counts = torch.bincount(
+        expert_counts = torch.bincount(
             topk_indices.flatten(), minlength=self.num_routed_experts
-        ).tolist()
+        )
+
+        # Save for logging
+        if hasattr(self, "expert_usage"):
+            self.expert_usage.append(expert_counts.detach().cpu())
+        else:
+            self.expert_usage = [expert_counts.detach().cpu()]
+
+        y = torch.zeros_like(x)
+        # counts = torch.bincount(
+        #     topk_indices.flatten(), minlength=self.num_routed_experts
+        # ).tolist()
+        counts = expert_counts.tolist()
         for i in range(self.num_routed_experts):
             if counts[i] == 0:
                 continue
