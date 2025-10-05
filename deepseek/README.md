@@ -2,6 +2,9 @@
 
 ## Observations, learnings and analysis
 
+### Trained model
+- Model trained for 30k steps with batch size of 24 (total 7,20,000 samples seen) - [sky-2002/deepseek-tinystories-60M](https://huggingface.co/sky-2002/deepseek-tinystories-60M)
+
 ### Dataset
 
 [`roneneldan/TinyStories`](https://huggingface.co/datasets/roneneldan/TinyStories)
