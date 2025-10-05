@@ -51,16 +51,14 @@ The above results in a 58M parameter model.
 
 - I noticed that my training gets plateaued after a certain number of iterations. This could be because of small model size, but I did some analysis on my gradient norm and expert usage. I noticed that after a point, only two of my four experts are being used. And grad norm quickly goes towards 0.
 
-|   |        |
-|----------------|------------------|
-| ![Expert usage](<expert_usage_before_1.png>) | ![Grad Norm](<Screenshot from 2025-10-02 13-12-09.png>) |
+![Expert usage](<images/expert_usage_before_1.png>)
 
 
 - Added the auxiliary loss free load balancing using the bias as mentioned in the [DeepSeek-V3](https://arxiv.org/html/2412.19437v1) technical report. 
 
 | | |
 |---|---|
-| ![Expert usage after fix](expert_usage_after_1.png) | |
+| ![Expert usage after fix](<images/expert_usage_after_1.png>) | |
 
 
 
@@ -68,9 +66,9 @@ The above results in a 58M parameter model.
 
 | Prompt | Attention decay curve (block 0) | Attention decay curve (block 2 - last block) |
 |--------|-----------------------|----------------|
-| Once upon a time, there was a little girl named Lily. One day, she found a needle. She showed it to her mom. Mom said, \"Good job, Lily! Keep it safe.\" Lily put the needle in her toy box. They played with the needle all day long" | ![attn_decay_1](attn_decay_1.png) | ![attn_decay_1_2](attn_decay_1_2.png) |
-| Once upon a time, there was a little car named Beep. Beep loved to go fast and play in the sun. | ![attn_decay_2](attn_decay_2.png) | ![attn_decay_2_2](attn_decay_2_2.png) |
-| Mommy and Emily were playing a matching game together. Emily was so excited to find the matching games at the store. She liked watching the videos on the screen as she matched each card. "Mommy, I think I'm getting really good at this!" Emily said. "That's wonderful, sweetheart!" Mommy replied. "You're doing so well!" | ![attn_decay_3](attn_decay_3.png) | ![attn_decay_3_2](attn_decay_3_2.png) |
+| Once upon a time, there was a little girl named Lily. One day, she found a needle. She showed it to her mom. Mom said, \"Good job, Lily! Keep it safe.\" Lily put the needle in her toy box. They played with the needle all day long" | ![attn_decay_1](images/attn_decay_1.png) | ![attn_decay_1_2](images/attn_decay_1_2.png) |
+| Once upon a time, there was a little car named Beep. Beep loved to go fast and play in the sun. | ![attn_decay_2](images/attn_decay_2.png) | ![attn_decay_2_2](images/attn_decay_2_2.png) |
+| Mommy and Emily were playing a matching game together. Emily was so excited to find the matching games at the store. She liked watching the videos on the screen as she matched each card. "Mommy, I think I'm getting really good at this!" Emily said. "That's wonderful, sweetheart!" Mommy replied. "You're doing so well!" | ![attn_decay_3](images/attn_decay_3.png) | ![attn_decay_3_2](images/attn_decay_3_2.png) |
 
 The above plots try to answer this question -> `How much attention, on average, does the model pay to tokens that are d steps behind the current one?`
 
@@ -84,12 +82,12 @@ The above plots try to answer this question -> `How much attention, on average, 
 
 
 ### Attention weights (last layer, averaged across heads) visualization for some prompts
-![attn_score_vis](attn_score_vis.png)
+![attn_score_vis](images/attn_score_vis.png)
 
 
 ### MoE expert specialization analysis (performed on 200 samples from validation set)
 
-![expert_moe_specialization](expert_moe_specialization.png)
+![expert_moe_specialization](images/expert_moe_specialization.png)
 
 | Expert | Common tokens                          | Possible linguistic role                                                                          |
 | ------ | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
