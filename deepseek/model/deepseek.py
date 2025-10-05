@@ -96,6 +96,14 @@ class MoE(nn.Module):
 
         topk_indices = topk_indices.view(batch_size * num_tokens, -1)
 
+        # --- cache routing info for interpretability ---
+        self.last_topk_indices = (
+            topk_indices.view(batch_size, num_tokens, -1).detach().cpu()
+        )
+        self.last_gate_output = (
+            gate_output.view(batch_size, num_tokens, -1).detach().cpu()
+        )
+
         expert_counts = torch.bincount(
             topk_indices.flatten(), minlength=self.num_routed_experts
         )
@@ -528,6 +536,7 @@ class MultiHeadLatentAttention(nn.Module):
         )
 
         attention_weights = torch.softmax(attention_scores, dim=-1)
+        self.last_attention = attention_weights.detach()
         attention_weights = self.dropout(attention_weights)
 
         # ----- Context -----
