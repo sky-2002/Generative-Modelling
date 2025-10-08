@@ -104,3 +104,6 @@ The above plots try to answer this question -> `How much attention, on average, 
 - Expert 2–3 → event & interaction semantics (“play”, “with”, “time”, “She”)
 - NOUN peaks in Expert 2 (0.18) → this expert handles object and subject nouns (like “Lily”, “time”, “girl”).
 - PUNCT high in Expert 1 → punctuation + quotation boundaries → this expert probably activates for dialogue and sentence ends.
+
+### Model Architecture diagram
+![model_architecture](images/deepseek_arch.png)
