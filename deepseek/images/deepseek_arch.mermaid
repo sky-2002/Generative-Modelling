@@ -1,0 +1,41 @@
+flowchart TB
+  %% ====== Top-Level Model ======
+  subgraph Model["DeepseekInspiredModel"]
+    direction TB
+    X["Token IDs"]
+    Embed["Embedding Layer"]
+    H0["Hidden States (h₀)"]
+
+    %% --- Dense Blocks ---
+    subgraph Dense["Dense Blocks (count = num_dense_ffn = 2)"]
+      direction TB
+      DB["TransformerBlock\n→ Attention + Dense Expert FFN"]
+    end
+
+    %% --- MoE Blocks ---
+    subgraph MoE["MoE Blocks (count = num_moe_ffn = 4)"]
+      direction TB
+      MB["TransformerBlock\n→ Attention + MoE FFN"]
+    end
+
+    LN["Final RMSNorm"]
+    Head["Linear to vocab (tied weights)"]
+    Logits["Output Logits"]
+
+    X --> Embed --> H0 --> Dense --> MoE --> LN --> Head --> Logits
+  end
+
+  %% ====== MoE FFN Internals (high-level) ======
+  subgraph MoE_FFN["MoE FFN per token"]
+    direction TB
+    h["Input h"]
+    Gate["Gate: Linear → scores\n(top-k = 2)"]
+    Routed["Routed Experts (num = 16)\nOnly top-2 active per token"]
+    Shared["Shared Experts (num = 8)\nAlways active"]
+    Combine["Sum( Routed_output + Shared_output )"]
+
+    h --> Gate --> Routed --> Combine
+    h --> Shared --> Combine
+  end
+
+  MB --- MoE_FFN
